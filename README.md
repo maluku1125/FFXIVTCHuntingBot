@@ -16,8 +16,8 @@
 ## 指令詳細說明
 
 ### `/set7atimerchannel`
-
 在當前頻道建立 **7A 狩獵刷新時間追蹤面板**。
+
 ![7Adashboard](7Adashboard.png)
 
 - 可以設置在某個頻道內，固定刷新(編輯)同一則訊息
@@ -41,9 +41,10 @@
 ---
 
 ### `/srankmap`
-![Srankmap](Srankmap.png)
-
 顯示指定地圖的 **S Rank 點位追蹤地圖**（僅自己可見）。
+
+![Srankmap](Srankmap.png)
+![command](command.png)
 
 - 參數：
   - `version`：遊戲版本（7.0 黃金遺産 / 6.0 曉月之終途）
@@ -57,11 +58,11 @@
 | 下拉選單 | 回報已排除的點位，即時更新地圖標記 |
 | 🔄 刷新地圖 | 重新生成最新地圖圖片 |
 | 🗑️ 清空排除紀錄 | 清除所有已排除點位，重新開始 |
-| 📋 批次貼入 | 貼入「繁中狩獵車」或「Turtle Scouter」匯出格式，批次排除點位 |
+| 📋 批次貼入 | 貼入「[繁中狩獵車](https://maluku1125.github.io/FFXIVHuntingTrain/)」或「Turtle Scouter」匯出格式，批次排除點位 |
 | 📢 分享到頻道 | 將目前地圖圖片以公開訊息發送到當前頻道 |
 
 **批次貼入支援格式：**
-(支援 __烏龜網__ 與 __繁中狩獵車__ 的output直接貼上)
+(支援 __烏龜網__ 與 __[繁中狩獵車](https://maluku1125.github.io/FFXIVHuntingTrain/)__ 的output直接貼上)
 ```
 Queen hawk @ Urqopacha ( 18.8 , 14.0 )
 Nechuciho @ Urqopacha ( 21.6 , 20.4 )
