@@ -33,6 +33,20 @@ _STATE_FILE = os.path.normpath(
 _HISTORY_LIMIT = 5
 WORLD_NAMES = ["伊弗利特", "迦樓羅", "利維坦", "鳳凰", "奧汀", "巴哈姆特", "泰坦"]
 
+# ── 地圖生成冷卻（秒）─────────────────────────────────────────────────────────
+_MAP_GEN_CD   = 10                          # 冷卻秒數
+_map_gen_last: dict[int, float] = {}        # { user_id: last_use_timestamp }
+
+def _check_map_cd(user_id: int) -> float:
+    """回傳剩餘冷卻秒數；0 表示可以使用，並同時更新時間戳記。"""
+    now      = time.time()
+    last     = _map_gen_last.get(user_id, 0.0)
+    remaining = _MAP_GEN_CD - (now - last)
+    if remaining > 0:
+        return remaining
+    _map_gen_last[user_id] = now
+    return 0.0
+
 # ── 資料載入 ──────────────────────────────────────────────────────────────────
 with open(_SRANK_DATA_FILE, "r", encoding="utf-8") as _f:
     SRANK_DATA: dict = json.load(_f)
@@ -88,7 +102,7 @@ def _set_cleared(map_name: str, cleared: list[str], server: str) -> None:
     _save_state(state)
 
 
-def _add_history(map_name: str, point: str, user_id: int, user_name: str, server: str) -> None:
+def _add_history(map_name: str, point: str, user_id: int, user_name: str, server: str, x: float | None = None, y: float | None = None) -> None:
     state = _load_state()
     if server not in state:
         state[server] = {}
@@ -100,6 +114,8 @@ def _add_history(map_name: str, point: str, user_id: int, user_name: str, server
         "user_id": user_id,
         "user_name": user_name,
         "ts": time.time(),
+        "x": x,
+        "y": y,
     })
     # 只保留最近 N 筆
     state[server][map_name]["history"] = history[-_HISTORY_LIMIT:]
@@ -168,7 +184,7 @@ def _parse_and_apply_batch(
         if label not in cleared:
             cleared.append(label)
             _set_cleared(zh_name, cleared, server)
-            _add_history(zh_name, label, user_id, user_name, server)
+            _add_history(zh_name, label, user_id, user_name, server, x=x, y=y)
             success_lines.append(f"✅ **{zh_name}** {label}　`({x}, {y})`")
         else:
             success_lines.append(f"⬜ **{zh_name}** {label}　`({x}, {y})` 已排除")
@@ -205,7 +221,8 @@ def build_srank_embed(map_name: str, map_data: dict, version: str, map_state: di
         hist_lines = []
         for h in reversed(history):
             ts = datetime.datetime.fromtimestamp(h["ts"]).strftime("%m/%d %H:%M")
-            hist_lines.append(f"`{h['point']}`　<@{h['user_id']}>　{ts}")
+            coord = f" `({h['x']}, {h['y']})`" if h.get("x") is not None else ""
+            hist_lines.append(f"`{h['point']}`{coord}　<@{h['user_id']}>　{ts}")
         embed.add_field(
             name=f"最近 {_HISTORY_LIMIT} 筆排除紀錄",
             value="\n".join(hist_lines),
@@ -307,12 +324,19 @@ class ReportSelect(Select):
         if label not in cleared:
             cleared.append(label)
             _set_cleared(self.map_name, cleared, view.server)
+            # 從 map_data 查出該點位的座標
+            _, map_data = _get_map_data(self.map_name)
+            pt_info = next((p for p in map_data["points"] if p["label"] == label), None)
+            px = pt_info["x"] if pt_info else None
+            py = pt_info["y"] if pt_info else None
             _add_history(
                 self.map_name,
                 label,
                 interaction.user.id,
                 interaction.user.display_name,
                 view.server,
+                x=px,
+                y=py,
             )
 
         # 更新 embed 與選單（不重生地圖）
@@ -329,6 +353,13 @@ class RefreshSRankButton(Button):
         self.map_name = map_name
 
     async def callback(self, interaction: discord.Interaction):
+        remaining = _check_map_cd(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"⏳ 地圖生成冷卻中，請等待 **{remaining:.0f}** 秒後再試。",
+                ephemeral=True,
+            )
+            return
         view: SRankView = self.view
         await view.refresh_message(interaction)
 
@@ -404,6 +435,13 @@ class ShareToChannelButton(Button):
         self.map_name = map_name
 
     async def callback(self, interaction: discord.Interaction):
+        remaining = _check_map_cd(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"⏳ 地圖生成冷卻中，請等待 **{remaining:.0f}** 秒後再試。",
+                ephemeral=True,
+            )
+            return
         view: SRankView = self.view
         await interaction.response.defer(ephemeral=True)
 
