@@ -312,5 +312,61 @@ export const gameData = {
                 { label: "I", x: 28.3, y: 12.5 }
             ]
         }
+    },
+    "6.0": {
+        "安穆·艾蘭": {
+            mapImage: "maps/安穆·艾蘭.png",
+            mapNameEn: "Amh Araeng",
+            monsters: [
+                { name: "胡睹", nameEn: "Hulder", rank: "A" },
+                { name: "斯圖希", nameEn: "Storsie", rank: "A" },
+                { name: "布弗魯", nameEn: "Burfurlur the Canny", rank: "S" },
+                { name: "克爾", nameEn: "Ker", rank: "SS" }
+            ],
+            aetherytes: [
+                { name: "無路總部", x: 6.7, y: 27.6 },
+                { name: "小薩雷安", x: 21.6, y: 20.4 },
+                { name: "公堂保管院", x: 30.4, y: 12.0 }
+            ],
+            points: [
+                { label: "A", x: 6, y: 33.9 },
+                { label: "B", x: 10.5, y: 19.1 },
+                { label: "C", x: 12.4, y: 35.5 },
+                { label: "D", x: 16.5, y: 16.4 },
+                { label: "E", x: 17.3, y: 9.5 },
+                { label: "F", x: 19.7, y: 38.1 },
+                { label: "G", x: 25.5, y: 25.5 },
+                { label: "H", x: 30.3, y: 8.5 },
+                { label: "I", x: 32.5, y: 26 },
+                { label: "J", x: 34.4, y: 13.5 }
+            ]
+        },
+        "伊爾美格": {
+            mapImage: "maps/伊爾美格.png",
+            mapNameEn: "Il Mheg",
+            monsters: [
+                { name: "胡睹", nameEn: "Hulder", rank: "A" },
+                { name: "斯圖希", nameEn: "Storsie", rank: "A" },
+                { name: "布弗魯", nameEn: "Burfurlur the Canny", rank: "S" },
+                { name: "克爾", nameEn: "Ker", rank: "SS" }
+            ],
+            aetherytes: [
+                { name: "無路總部", x: 6.7, y: 27.6 },
+                { name: "小薩雷安", x: 21.6, y: 20.4 },
+                { name: "公堂保管院", x: 30.4, y: 12.0 }
+            ],
+            points: [
+                { label: "A", x: 6, y: 33.9 },
+                { label: "B", x: 10.5, y: 19.1 },
+                { label: "C", x: 12.4, y: 35.5 },
+                { label: "D", x: 16.5, y: 16.4 },
+                { label: "E", x: 17.3, y: 9.5 },
+                { label: "F", x: 19.7, y: 38.1 },
+                { label: "G", x: 25.5, y: 25.5 },
+                { label: "H", x: 30.3, y: 8.5 },
+                { label: "I", x: 32.5, y: 26 },
+                { label: "J", x: 34.4, y: 13.5 }
+            ]
+        },
     }
 };

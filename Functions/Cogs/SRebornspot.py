@@ -30,7 +30,8 @@ _SRANK_DATA_FILE = os.path.normpath(
 _STATE_FILE = os.path.normpath(
     os.path.join(_ROOT_DIR, "Config", "srank_state.json")
 )
-_HISTORY_LIMIT = 5
+_HISTORY_LIMIT = 5          # embed 顯示筆數
+_HISTORY_STORAGE_LIMIT = 20  # 實際儲存筆數
 WORLD_NAMES = ["伊弗利特", "迦樓羅", "利維坦", "鳳凰", "奧汀", "巴哈姆特", "泰坦"]
 
 # ── 地圖生成冷卻（秒）─────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ def _add_history(map_name: str, point: str, user_id: int, user_name: str, server
         "y": y,
     })
     # 只保留最近 N 筆
-    state[server][map_name]["history"] = history[-_HISTORY_LIMIT:]
+    state[server][map_name]["history"] = history[-_HISTORY_STORAGE_LIMIT:]
     _save_state(state)
 
 
@@ -176,7 +177,7 @@ def _parse_and_apply_batch(
         map_data = SRANK_DATA[ver][zh_name]
         label = _find_closest_label(map_data, x, y)
         if label is None:
-            fail_lines.append(f"`{m.group(1).strip()} ({x}, {y})` — 座標無匹配點位")
+            fail_lines.append(f"`{m.group(1).strip()} ({x:.1f}, {y:.1f})` — 座標無匹配點位")
             continue
 
         map_state = _get_map_state(zh_name, server)
@@ -185,9 +186,9 @@ def _parse_and_apply_batch(
             cleared.append(label)
             _set_cleared(zh_name, cleared, server)
             _add_history(zh_name, label, user_id, user_name, server, x=x, y=y)
-            success_lines.append(f"✅ **{zh_name}** {label}　`({x}, {y})`")
+            success_lines.append(f"✅ **{zh_name}** {label}　`({x:.1f}, {y:.1f})`")
         else:
-            success_lines.append(f"⬜ **{zh_name}** {label}　`({x}, {y})` 已排除")
+            success_lines.append(f"⬜ **{zh_name}** {label}　`({x:.1f}, {y:.1f})` 已排除")
 
     return success_lines, fail_lines
 
@@ -219,9 +220,11 @@ def build_srank_embed(map_name: str, map_data: dict, version: str, map_state: di
 
     if history:
         hist_lines = []
-        for h in reversed(history):
+        for h in reversed(history[-_HISTORY_LIMIT:]):
             ts = datetime.datetime.fromtimestamp(h["ts"]).strftime("%m/%d %H:%M")
-            coord = f" `({h['x']}, {h['y']})`" if h.get("x") is not None else ""
+            x_str = f"{h['x']:.1f}" if h.get("x") is not None else ""
+            y_str = f"{h['y']:.1f}" if h.get("y") is not None else ""
+            coord = f" `({x_str}, {y_str})`" if x_str else ""
             hist_lines.append(f"`{h['point']}`{coord}　<@{h['user_id']}>　{ts}")
         embed.add_field(
             name=f"最近 {_HISTORY_LIMIT} 筆排除紀錄",
@@ -453,13 +456,20 @@ class ShareToChannelButton(Button):
         map_state = _get_map_state(self.map_name, view.server)
         cleared = set(map_state.get("cleared", []))
 
-        embed = build_srank_embed(self.map_name, map_data, view.version, map_state, view.server)
+        _u = interaction.user
+        _nick = getattr(_u, 'nick', None) or _u.display_name
+
+        embed = discord.Embed(
+            title=f"{self.map_name}　S Rank 點位追蹤",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"版本 {view.version}　｜　伺服器：{view.server}　｜　由 {_nick} 分享")
         map_file = generate_map(map_data, cleared)
         embed.set_image(url="attachment://map.png")
 
         try:
             await interaction.channel.send(embed=embed, file=map_file)
-            print(f"[ShareToChannel] user={interaction.user} ({interaction.user.id}) | map={self.map_name} | server={view.server} | channel={getattr(interaction.channel, 'name', 'N/A')}")
+            print(f"[ShareToChannel] user={_nick} ({_u.id}) | map={self.map_name} | server={view.server} | channel={getattr(interaction.channel, 'name', 'N/A')}")
             await interaction.followup.send("✅ 已分享到頻道！", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ 機器人沒有在此頻道發送訊息的權限。", ephemeral=True)
@@ -491,8 +501,9 @@ class SRebornSpot(commands.Cog):
     )
     @app_commands.choices(
         version=[
-            app_commands.Choice(name="7.0（黃金遺産）", value="7.0"),
-            app_commands.Choice(name="6.0（曉月之終途）", value="6.0"),
+            app_commands.Choice(name="7.0", value="7.0"),
+            app_commands.Choice(name="6.0", value="6.0"),
+            app_commands.Choice(name="5.0", value="5.0"),
         ],
         server=[app_commands.Choice(name=w, value=w) for w in WORLD_NAMES],
     )
@@ -504,7 +515,9 @@ class SRebornSpot(commands.Cog):
         map_name: str,
     ):
         await interaction.response.defer(ephemeral=True)
-        print(f"[/srankmap] user={interaction.user} ({interaction.user.id}) | version={version.value} | server={server.value} | map={map_name} | guild={getattr(interaction.guild, 'name', 'DM')} | channel={getattr(interaction.channel, 'name', 'N/A')}")
+        _u = interaction.user
+        _nick = getattr(_u, 'nick', None) or _u.display_name
+        print(f"[/srankmap] user={_nick} ({_u.id}) | version={version.value} | server={server.value} | map={map_name} | guild={getattr(interaction.guild, 'name', 'DM')} | channel={getattr(interaction.channel, 'name', 'N/A')}")
 
         ver = version.value
         ser = server.value

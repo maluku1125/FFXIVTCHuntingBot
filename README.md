@@ -42,6 +42,7 @@
 
 ### `/srankmap`
 顯示指定地圖的 **S Rank 點位追蹤地圖**（僅自己可見）。
+> 懶人包：點設定好按刷新圖片或分享圖片
 
 ![Srankmap](Srankmap.png)
 ![command](command.png)!
