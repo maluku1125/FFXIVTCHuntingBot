@@ -64,6 +64,37 @@ def _save_persisted(guild_id: int, channel_id: int, message_id: int) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# ── 外部呼叫：立即刷新面板 ───────────────────────────────────────────────────────
+
+async def refresh_panel(bot: commands.Bot, guild_id: int) -> None:
+    """重新從 JSON 讀取並立即刷新指定 guild 的面板 embed。"""
+    state = _load_persisted(guild_id)
+    channel_id = state.get("channel_id")
+    message_id = state.get("message_id")
+    if not channel_id or not message_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+    try:
+        message = await channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden):
+        return
+    kill_times  = state.get("kill_times",  [None] * len(WORLD_NAMES))
+    scout_users = state.get("scout_users", [None] * len(WORLD_NAMES))
+    _hunt_state[message_id]  = kill_times
+    _scout_state[message_id] = scout_users
+    embed = build_embed(kill_times, scout_users)
+    view  = build_view(kill_times, scout_users)
+    try:
+        await message.edit(embed=embed, view=view)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+        print(f"[refresh_panel] edit failed for guild {guild_id}: {e!r}")
+
+
 # ── 狀態判斷 ──────────────────────────────────────────────────────────────────
 
 def get_status(kill_ts) -> str:
@@ -152,31 +183,33 @@ def build_embed(kill_times: list, scout_users: list) -> discord.Embed:
 
 # ── UI 元件 ───────────────────────────────────────────────────────────────────
 
-class BossButton(Button):
+class WorldButton(Button):
     def __init__(
         self,
-        boss_index: int,
-        boss_name:  str,
+        world_index: int,
+        world_name:  str,
         style:    discord.ButtonStyle = discord.ButtonStyle.primary,
         disabled: bool = False,
     ):
         super().__init__(
-            label=boss_name,
+            label=world_name,
             style=style,
-            custom_id=f"hunt_boss_{boss_index}",
+            custom_id=f"hunt_world_{world_index}",
             disabled=disabled,
         )
-        self.boss_index = boss_index
+        self.world_index = world_index
 
     async def callback(self, interaction: discord.Interaction):
         msg_id   = interaction.message.id
         guild_id = interaction.guild_id
-        if msg_id not in _hunt_state:
-            _hunt_state[msg_id] = [None] * len(WORLD_NAMES)
-        if msg_id not in _scout_state:
-            _scout_state[msg_id] = [None] * len(WORLD_NAMES)
-        _hunt_state[msg_id][self.boss_index] = time.time()
-        _scout_state[msg_id][self.boss_index] = None  # 討伐後清除偵查狀態
+        if msg_id not in _hunt_state or msg_id not in _scout_state:
+            saved = _load_persisted(guild_id)
+            if msg_id not in _hunt_state:
+                _hunt_state[msg_id] = saved.get("kill_times",  [None] * len(WORLD_NAMES))
+            if msg_id not in _scout_state:
+                _scout_state[msg_id] = saved.get("scout_users", [None] * len(WORLD_NAMES))
+        _hunt_state[msg_id][self.world_index] = time.time()
+        _scout_state[msg_id][self.world_index] = None  # 討伐後清除偵查狀態
 
         _save_persisted(guild_id, interaction.channel_id, msg_id)
 
@@ -195,8 +228,16 @@ class RefreshButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         msg_id     = interaction.message.id
-        kill_times  = _hunt_state.get(msg_id,  [None] * len(WORLD_NAMES))
-        scout_users = _scout_state.get(msg_id, [None] * len(WORLD_NAMES))
+        kill_times  = _hunt_state.get(msg_id)
+        scout_users = _scout_state.get(msg_id)
+        if kill_times is None or scout_users is None:
+            saved = _load_persisted(interaction.guild_id)
+            if kill_times is None:
+                kill_times = saved.get("kill_times",  [None] * len(WORLD_NAMES))
+                _hunt_state[msg_id] = kill_times
+            if scout_users is None:
+                scout_users = saved.get("scout_users", [None] * len(WORLD_NAMES))
+                _scout_state[msg_id] = scout_users
         embed = build_embed(kill_times, scout_users)
         view  = build_view(kill_times,  scout_users)
         await interaction.response.edit_message(embed=embed, view=view)
@@ -209,7 +250,7 @@ class ScoutSelect(Select):
             for i, name in enumerate(WORLD_NAMES)
         ]
         super().__init__(
-            placeholder="選擇偵查中的BOSS（再選一次可取消）",
+            placeholder="選擇偵查中的伺服器（再選一次可取消）",
             options=options,
             custom_id="scout_select",
         )
@@ -218,10 +259,12 @@ class ScoutSelect(Select):
         msg_id     = interaction.message.id
         guild_id   = interaction.guild_id
         boss_index = int(self.values[0])
-        if msg_id not in _hunt_state:
-            _hunt_state[msg_id] = [None] * len(WORLD_NAMES)
-        if msg_id not in _scout_state:
-            _scout_state[msg_id] = [None] * len(WORLD_NAMES)
+        if msg_id not in _hunt_state or msg_id not in _scout_state:
+            saved = _load_persisted(guild_id)
+            if msg_id not in _hunt_state:
+                _hunt_state[msg_id] = saved.get("kill_times",  [None] * len(WORLD_NAMES))
+            if msg_id not in _scout_state:
+                _scout_state[msg_id] = saved.get("scout_users", [None] * len(WORLD_NAMES))
 
         if _scout_state[msg_id][boss_index] == interaction.user.id:
             _scout_state[msg_id][boss_index] = None
@@ -243,7 +286,7 @@ class HuntView(View):
     def __init__(self):
         super().__init__(timeout=None)
         for i, name in enumerate(WORLD_NAMES):
-            self.add_item(BossButton(boss_index=i, boss_name=name))
+            self.add_item(WorldButton(world_index=i, world_name=name))
         self.add_item(ScoutSelect())
         self.add_item(RefreshButton())
 
@@ -253,7 +296,7 @@ def build_view(kill_times: list, scout_users: list = None) -> View:
     view = View(timeout=None)
     for i, name in enumerate(WORLD_NAMES):
         style, disabled = get_button_appearance(kill_times[i])
-        view.add_item(BossButton(boss_index=i, boss_name=name, style=style, disabled=disabled))
+        view.add_item(WorldButton(world_index=i, world_name=name, style=style, disabled=disabled))
     view.add_item(ScoutSelect())
     view.add_item(RefreshButton())
     return view
@@ -290,17 +333,32 @@ class ATrainOverview(commands.Cog):
 
             channel = self.client.get_channel(channel_id)
             if channel is None:
-                continue
+                try:
+                    channel = await self.client.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    continue
             try:
                 message = await channel.fetch_message(message_id)
             except (discord.NotFound, discord.Forbidden):
                 continue
 
-            kill_times  = _hunt_state.get(message_id,  [None] * len(WORLD_NAMES))
-            scout_users = _scout_state.get(message_id, [None] * len(WORLD_NAMES))
+            kill_times  = state.get("kill_times",  [None] * len(WORLD_NAMES))
+            scout_users = state.get("scout_users", [None] * len(WORLD_NAMES))
+            _hunt_state[message_id]  = kill_times
+            _scout_state[message_id] = scout_users
             embed = build_embed(kill_times, scout_users)
             view  = build_view(kill_times,  scout_users)
-            await message.edit(embed=embed, view=view)
+            try:
+                await message.edit(embed=embed, view=view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                print(f"[auto_refresh] edit failed for guild {guild_id_str}: {e!r}")
+                continue
+
+    @auto_refresh.error
+    async def auto_refresh_error(self, error):
+        print(f"[auto_refresh] task crashed: {error!r}")
+        if not self.auto_refresh.is_running():
+            self.auto_refresh.start()
 
     @auto_refresh.before_loop
     async def before_auto_refresh(self):
@@ -319,6 +377,15 @@ class ATrainOverview(commands.Cog):
         state          = _load_persisted(guild_id)
         old_channel_id = state.get("channel_id")
         old_message_id = state.get("message_id")
+
+        # 保留舊的討伐資料，跨頻道遷移時不清空
+        if old_message_id:
+            kill_times  = _hunt_state.pop(old_message_id, state.get("kill_times",  [None] * len(WORLD_NAMES)))
+            scout_users = _scout_state.pop(old_message_id, state.get("scout_users", [None] * len(WORLD_NAMES)))
+        else:
+            kill_times  = [None] * len(WORLD_NAMES)
+            scout_users = [None] * len(WORLD_NAMES)
+
         if old_channel_id and old_message_id:
             old_channel = self.client.get_channel(old_channel_id)
             if old_channel:
@@ -327,11 +394,7 @@ class ATrainOverview(commands.Cog):
                     await old_msg.delete()
                 except (discord.NotFound, discord.Forbidden):
                     pass
-            _hunt_state.pop(old_message_id, None)
-            _scout_state.pop(old_message_id, None)
 
-        kill_times  = [None] * len(WORLD_NAMES)
-        scout_users = [None] * len(WORLD_NAMES)
         embed = build_embed(kill_times, scout_users)
         view  = HuntView()
         msg   = await interaction.channel.send(embed=embed, view=view)
@@ -342,20 +405,55 @@ class ATrainOverview(commands.Cog):
 
         await interaction.followup.send("✅ 狩獵追蹤面板已在此頻道建立！", ephemeral=True)
 
-    # ── /resetboss：重置單一 BOSS 時間 ───────────────────────────────────────
+    # ── /reset7aworld：設定或清除單一世界討伐時間 ────────────────────────────
 
-    @app_commands.command(name="resetboss", description="重置指定BOSS的討伐時間記錄")
-    @app_commands.describe(boss="選擇要重置的BOSS")
+    @app_commands.command(name="reset7aworld", description="設定或清除指定伺服器的7A討伐時間記錄")
+    @app_commands.describe(
+        world="選擇要設定的伺服器",
+        kill_time="討伐時間，格式 HH:MM 或 MM/DD HH:MM（留空則清除記錄）",
+    )
     @app_commands.guild_only()
     @is_allowed()
-    @app_commands.choices(boss=[
+    @app_commands.choices(world=[
         app_commands.Choice(name=name, value=str(i))
         for i, name in enumerate(WORLD_NAMES)
     ])
-    async def resetboss(self, interaction: discord.Interaction, boss: app_commands.Choice[str]):
+    async def reset7aworld(
+        self,
+        interaction: discord.Interaction,
+        world: app_commands.Choice[str],
+        kill_time: str = None,
+    ):
         await interaction.response.defer(ephemeral=True)
-        print(f"[/resetboss] user={interaction.user} ({interaction.user.id}) | boss={boss.name} | guild={getattr(interaction.guild, 'name', 'DM')} | channel={getattr(interaction.channel, 'name', 'N/A')}")
+        print(f"[/reset7aworld] user={interaction.user} ({interaction.user.id}) | world={world.name} | kill_time={kill_time!r} | guild={getattr(interaction.guild, 'name', 'DM')} | channel={getattr(interaction.channel, 'name', 'N/A')}")
 
+        # ── 解析時間 ──────────────────────────────────────────────────────────
+        new_ts: float | None = None
+        if kill_time is not None:
+            now_dt = datetime.datetime.now()
+            parsed = None
+            for fmt in ("%m/%d %H:%M", "%H:%M"):
+                try:
+                    parsed = datetime.datetime.strptime(kill_time.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            if parsed is None:
+                await interaction.followup.send(
+                    "❌ 時間格式錯誤，請使用 `HH:MM` 或 `MM/DD HH:MM`。", ephemeral=True
+                )
+                return
+            # 補全年份（及月份/日期）
+            if fmt == "%H:%M":
+                parsed = parsed.replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
+            else:
+                parsed = parsed.replace(year=now_dt.year)
+            # 若解析結果在未來，視為前一年
+            if parsed > now_dt:
+                parsed = parsed.replace(year=now_dt.year - 1)
+            new_ts = parsed.timestamp()
+
+        # ── 更新狀態 ──────────────────────────────────────────────────────────
         guild_id   = interaction.guild_id
         state      = _load_persisted(guild_id)
         message_id = state.get("message_id")
@@ -364,13 +462,13 @@ class ATrainOverview(commands.Cog):
             await interaction.followup.send("❌ 此伺服器尚未建立狩獵面板，請先使用 `/set7atimerchannel`。", ephemeral=True)
             return
 
-        boss_index = int(boss.value)
+        world_index = int(world.value)
         if message_id not in _hunt_state:
             _hunt_state[message_id] = [None] * len(WORLD_NAMES)
         if message_id not in _scout_state:
             _scout_state[message_id] = [None] * len(WORLD_NAMES)
 
-        _hunt_state[message_id][boss_index] = None
+        _hunt_state[message_id][world_index] = new_ts
         _save_persisted(guild_id, channel_id, message_id)
 
         channel = self.client.get_channel(channel_id)
@@ -383,7 +481,12 @@ class ATrainOverview(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 pass
 
-        await interaction.followup.send(f"✅ 已重置 **{boss.name}** 的討伐時間。", ephemeral=True)
+        if new_ts is None:
+            reply = f"✅ 已清除 **{world.name}** 的討伐時間記錄。"
+        else:
+            dt_str = datetime.datetime.fromtimestamp(new_ts).strftime("%m/%d %H:%M")
+            reply = f"✅ 已將 **{world.name}** 的討伐時間設定為 `{dt_str}`。"
+        await interaction.followup.send(reply, ephemeral=True)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):

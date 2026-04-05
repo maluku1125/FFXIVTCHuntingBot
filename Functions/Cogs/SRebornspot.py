@@ -504,6 +504,7 @@ class SRebornSpot(commands.Cog):
             app_commands.Choice(name="7.0", value="7.0"),
             app_commands.Choice(name="6.0", value="6.0"),
             app_commands.Choice(name="5.0", value="5.0"),
+            app_commands.Choice(name="4.0", value="4.0"),
         ],
         server=[app_commands.Choice(name=w, value=w) for w in WORLD_NAMES],
     )

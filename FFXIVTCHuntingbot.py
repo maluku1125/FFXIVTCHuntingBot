@@ -61,6 +61,14 @@ class HuntBot(commands.AutoShardedBot):
         print("Cog: ATrainOverview loaded")
         await self.load_extension("Functions.Cogs.SRebornspot")
         print("Cog: SRebornspot loaded")
+        await self.load_extension("Functions.Cogs.MessageLogger")
+        print("Cog: MessageLogger loaded")
+        await self.load_extension("Functions.Cogs.EorzeaTime")
+        print("Cog: EorzeaTime loaded")
+        await self.load_extension("Functions.Cogs.Weather")
+        print("Cog: Weather loaded")
+        await self.load_extension("Functions.Cogs.SRankSpecial")
+        print("Cog: SRankSpecial loaded")
 
         # 讓所有 slash command 支援個人安裝（User Install）
         _install = app_commands.AppInstallationType(guild=True, user=True)
