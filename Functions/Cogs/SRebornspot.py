@@ -21,7 +21,7 @@ _FUNC_DIR = os.path.normpath(os.path.join(_THIS_DIR, ".."))
 if _FUNC_DIR not in sys.path:
     sys.path.insert(0, _FUNC_DIR)
 
-from MapGenerator import generate_map  # noqa: E402
+from MapGenerator import generate_map, generate_overview_map  # noqa: E402
 from BasicFunction import is_allowed  # noqa: E402
 
 _SRANK_DATA_FILE = os.path.normpath(
@@ -244,10 +244,11 @@ class SRankView(View):
         self.map_name = map_name
         self.version = version
         self.server = server
+        self._mode = "exclude"  # "exclude" | "unexclude"
         self._rebuild_select()
 
     def _rebuild_select(self):
-        # 移除舊的 select（若有）
+        # 移除舊的 Select
         to_remove = [item for item in self.children if isinstance(item, Select)]
         for item in to_remove:
             self.remove_item(item)
@@ -258,8 +259,18 @@ class SRankView(View):
         all_labels = [pt["label"] for pt in map_data["points"]]
         remaining = [lb for lb in all_labels if lb not in cleared]
 
-        select = ReportSelect(self.map_name, remaining)
+        if self._mode == "unexclude":
+            select = UnexcludeSelect(self.map_name, cleared)
+        else:
+            select = ReportSelect(self.map_name, remaining)
         self.add_item(select)
+
+        # 同步切換按鈕的 label
+        for item in self.children:
+            if isinstance(item, ToggleModeButton):
+                item.label = "➕ 回報排除" if self._mode == "unexclude" else "↩️ 撤回標記"
+                item.style = discord.ButtonStyle.secondary if self._mode == "unexclude" else discord.ButtonStyle.primary
+                break
 
     async def refresh_embed_only(self, interaction: discord.Interaction):
         """只更新 embed 與選單，不重生地圖圖片（速度快）。"""
@@ -346,6 +357,60 @@ class ReportSelect(Select):
         await view.refresh_embed_only(interaction)
 
 
+class UnexcludeSelect(Select):
+    def __init__(self, map_name: str, cleared: list[str]):
+        self.map_name = map_name
+        if cleared:
+            options = [
+                discord.SelectOption(label=f"✅ 點位 {lb} 已排除", value=lb)
+                for lb in cleared
+            ]
+            placeholder = "撤銷排除點位"
+            disabled = False
+        else:
+            options = [discord.SelectOption(label="—", value="none")]
+            placeholder = "尚無排除紀錄"
+            disabled = True
+
+        super().__init__(
+            placeholder=placeholder,
+            options=options,
+            custom_id=f"srank_unexclude_{map_name}",
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.defer()
+            return
+
+        label = self.values[0]
+        view: SRankView = self.view
+        map_state = _get_map_state(self.map_name, view.server)
+        cleared = map_state.get("cleared", [])
+
+        if label in cleared:
+            cleared.remove(label)
+            _set_cleared(self.map_name, cleared, view.server)
+
+        await view.refresh_embed_only(interaction)
+
+
+class ToggleModeButton(Button):
+    def __init__(self, map_name: str):
+        super().__init__(
+            label="↩️ 撤回標記",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"srank_toggle_{map_name}",
+        )
+        self.map_name = map_name
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SRankView = self.view
+        view._mode = "unexclude" if view._mode == "exclude" else "exclude"
+        await view.refresh_embed_only(interaction)
+
+
 class RefreshSRankButton(Button):
     def __init__(self, map_name: str):
         super().__init__(
@@ -380,6 +445,87 @@ class ClearSRankButton(Button):
         view: SRankView = self.view
         _clear_map(self.map_name, view.server)
         await view.refresh_embed_only(interaction)
+
+
+_OVERVIEW_LEGEND = "（點位上的縮寫代表該伺服器尚未排除此點位）"
+
+
+def _build_overview(map_name: str) -> tuple[discord.Embed, discord.File]:
+    """建立多伺服器總覽 embed + 地圖 File，每次呼叫均重新生成。"""
+    _, map_data = _get_map_data(map_name)
+    server_cleared: dict[str, set[str]] = {
+        sv: set(_get_map_state(map_name, sv).get("cleared", []))
+        for sv in WORLD_NAMES
+    }
+    map_file = generate_overview_map(map_data, server_cleared)
+    embed = discord.Embed(
+        title=f"{map_name}　多伺服器總覽",
+        description=_OVERVIEW_LEGEND,
+        color=discord.Color.blurple(),
+    )
+    embed.set_image(url="attachment://map.png")
+    return embed, map_file
+
+
+class OverviewShareView(View):
+    """附在多伺服器總覽 ephemeral 訊息上，提供「分享到頻道」功能。"""
+
+    def __init__(self, map_name: str):
+        super().__init__(timeout=120)
+        self.map_name = map_name
+
+    @discord.ui.button(label="📢 分享到頻道", style=discord.ButtonStyle.success)
+    async def share(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                "❌ 無法取得頻道，此功能僅限伺服器頻道使用。", ephemeral=True
+            )
+            return
+
+        remaining = _check_map_cd(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"⏳ 地圖生成冷卻中，請等待 **{remaining:.0f}** 秒後再試。",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        embed, map_file = _build_overview(self.map_name)
+        _nick = getattr(interaction.user, "nick", None) or interaction.user.display_name
+        embed.set_footer(text=f"由 {_nick} 分享")
+        try:
+            await interaction.channel.send(embed=embed, file=map_file)
+            await interaction.followup.send("✅ 已分享到頻道！", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 機器人沒有在此頻道發送訊息的權限。", ephemeral=True)
+
+
+class OverviewButton(Button):
+    def __init__(self, map_name: str):
+        super().__init__(
+            label="🌐 多伺服器總覽",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"srank_overview_{map_name}",
+        )
+        self.map_name = map_name
+
+    async def callback(self, interaction: discord.Interaction):
+        remaining = _check_map_cd(interaction.user.id)
+        if remaining > 0:
+            await interaction.response.send_message(
+                f"⏳ 地圖生成冷卻中，請等待 **{remaining:.0f}** 秒後再試。",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        embed, map_file = _build_overview(self.map_name)
+        await interaction.followup.send(
+            embed=embed, file=map_file,
+            view=OverviewShareView(self.map_name),
+            ephemeral=True,
+        )
 
 
 class BatchInputModal(Modal, title="📋 批次貼入 S Rank 點位"):
@@ -478,9 +624,11 @@ class ShareToChannelButton(Button):
 def build_srank_view(map_name: str, version: str, server: str) -> SRankView:
     view = SRankView(map_name, version, server)
     view.add_item(RefreshSRankButton(map_name))
+    view.add_item(ToggleModeButton(map_name))
     view.add_item(ClearSRankButton(map_name))
     view.add_item(BatchInputButton(map_name))
     view.add_item(ShareToChannelButton(map_name))
+    view.add_item(OverviewButton(map_name))
     return view
 
 
@@ -505,6 +653,8 @@ class SRebornSpot(commands.Cog):
             app_commands.Choice(name="6.0", value="6.0"),
             app_commands.Choice(name="5.0", value="5.0"),
             app_commands.Choice(name="4.0", value="4.0"),
+            app_commands.Choice(name="3.0", value="3.0"),
+            app_commands.Choice(name="2.0", value="2.0")
         ],
         server=[app_commands.Choice(name=w, value=w) for w in WORLD_NAMES],
     )
@@ -561,6 +711,84 @@ class SRebornSpot(commands.Cog):
                 await interaction.response.send_message(msg, ephemeral=True)
         else:
             raise error
+
+    @app_commands.command(name="resetalldata", description="清除所有 S 怪排除資料與操作紀錄")
+    @is_allowed()
+    async def resetalldata(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            content=(
+                "⚠️ **第一次確認**\n\n"
+                "這將刪除所有伺服器、所有地圖的 S 怪排除資料與操作紀錄。\n"
+                "請再次確認是否執行。"
+            ),
+            view=_ConfirmResetView1(),
+            ephemeral=True,
+        )
+
+
+def _reset_all_state() -> None:
+    """清除所有伺服器、所有地圖的 cleared 與 history，將 JSON 重置為空物件。"""
+    _save_state({})
+
+
+class _ConfirmResetView2(View):
+    """第二層確認：執行或取消。"""
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="🔴 確認執行（不可復原）", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        _reset_all_state()
+        self._disable_all()
+        await interaction.response.edit_message(
+            content="✅ 已清空所有 S 怪排除資料與紀錄。",
+            view=self,
+        )
+        print(f"[/resetalldata] 執行：user={interaction.user} ({interaction.user.id}) ")
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        self._disable_all()
+        await interaction.response.edit_message(content="✖️ 已取消。", view=self)
+
+    def _disable_all(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def on_timeout(self):
+        self._disable_all()
+
+
+class _ConfirmResetView1(View):
+    """第一層確認：進入第二層或取消。"""
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="⚠️ 確認重置", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        self._disable_all()
+        await interaction.response.edit_message(
+            content=(
+                "⚠️ **第二次確認**\n\n"
+                "這將游戲內《**所有伺服器**》、《**所有地圖**》的排除點位與操作紀錄全部刪除，\n"
+                "操作**不可復原**。請確認是否繼續。"
+            ),
+            view=_ConfirmResetView2(),
+        )
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        self._disable_all()
+        await interaction.response.edit_message(content="✖️ 已取消。", view=self)
+
+    def _disable_all(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def on_timeout(self):
+        self._disable_all()
 
 
 async def setup(client: commands.Bot):

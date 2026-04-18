@@ -124,8 +124,16 @@ def get_button_appearance(kill_ts) -> tuple[discord.ButtonStyle, bool]:
 
 
 def make_progress_bar(percent: float) -> str:
-    filled = max(0, min(10, int(percent // 10)))
-    return "▓" * filled + "░" * (10 - filled)
+    filled = max(0, min(20, int(percent // 5)))
+    return "▓" * filled + "░" * (20 - filled)
+
+
+# 世界名稱最長為 4 個中文字（伊弗利特、巴哈姆特），補全型空白至 4 字寬
+_MAX_NAME_LEN = max(len(n) for n in WORLD_NAMES)
+
+def _pad_name(name: str) -> str:
+    """補全型空白，使各世界名稱在 embed 中對齊（中文字 1 字 = 全型 1 格）。"""
+    return name + "\u3000" * (_MAX_NAME_LEN - len(name))
 
 
 # ── Embed 建構 ────────────────────────────────────────────────────────────────
@@ -149,10 +157,10 @@ def build_embed(kill_times: list, scout_users: list) -> discord.Embed:
         return (0, h)
 
     for i in sorted(range(len(WORLD_NAMES)), key=sort_key, reverse=True):
-        name     = WORLD_NAMES[i]
-        kill_ts  = kill_times[i]
+        name      = WORLD_NAMES[i]
+        kill_ts   = kill_times[i]
         scout_uid = scout_users[i] if scout_users else None
-        status   = get_status(kill_ts)
+        status    = get_status(kill_ts)
 
         elapsed = (now - kill_ts) if kill_ts is not None else None
 
@@ -167,14 +175,18 @@ def build_embed(kill_times: list, scout_users: list) -> discord.Embed:
         bar = make_progress_bar(pct)
 
         if elapsed is None or elapsed > ALIVE_MAX_HOURS * 3600:
-            time_str = "-"
+            time_str  = "-"
+            regen_str = "-"
         else:
-            dt = datetime.datetime.fromtimestamp(kill_ts)
-            time_str = f"{dt.month}/{dt.day} {dt.hour:02d}:{dt.minute:02d}"
+            dt        = datetime.datetime.fromtimestamp(kill_ts)
+            time_str  = f"{dt.hour:02d}:{dt.minute:02d}"
+            rdt       = datetime.datetime.fromtimestamp(kill_ts + RESPAWN_SECONDS)
+            regen_str = f"{rdt.hour:02d}:{rdt.minute:02d}"
 
         scout_line = f"\n偵查中：<@{scout_uid}>" if scout_uid else ""
-        value = f"`{bar}` {pct:.0f}% [{status}] 前次討伐 : {time_str}{scout_line}"
-        embed.add_field(name=f"**{name}**", value=value, inline=False)
+        field_name  = f"**{_pad_name(name)}``{bar}`` {pct:.0f}%**"
+        field_value = f"```ps\n[{status}] 前次討伐: {time_str}｜完全再生: {regen_str}\n```{scout_line}"
+        embed.add_field(name=field_name, value=field_value, inline=False)
 
     update_time = datetime.datetime.now().strftime("%H:%M:%S")
     embed.set_footer(text=f"上次更新：{update_time} ｜ 🟢存活 ｜ ⚪再生 ｜ 🔴冷卻 ")

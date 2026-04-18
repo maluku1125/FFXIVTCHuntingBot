@@ -44,6 +44,48 @@ def _build_current_embed():
     return embed
 
 
+def _parse_et_hhmm(raw: str) -> tuple[int, int] | None:
+    """將使用者輸入（1~4 位數字）解析為 (hour, minute)，無效時回傳 None。"""
+    s = raw.strip().replace(":", "")
+    if not s.isdigit():
+        return None
+    if len(s) <= 2:
+        h, m = int(s), 0
+    elif len(s) == 3:
+        h, m = int(s[0]), int(s[1:])
+    elif len(s) == 4:
+        h, m = int(s[:2]), int(s[2:])
+    else:
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h, m
+
+
+def _next_et_hhmm_unix(hour: int, minute: int) -> int:
+    """回傳下一次 ET HH:MM 對應的現實 Unix 時間戳（秒）。"""
+    _ET_DAY_ET_S = 86400          # 1 ET 日 = 86400 ET 秒
+    now_real     = time.time()
+    now_et_s     = int(now_real * _EORZEA_RATIO)   # 目前 ET 秒
+    et_day_start = now_et_s - (now_et_s % _ET_DAY_ET_S)
+    target_off   = hour * 3600 + minute * 60        # 目標在 ET 日內的偏移（ET 秒）
+    target_et_s  = et_day_start + target_off
+    if target_et_s <= now_et_s:                     # 今天這個時間已過，取下一 ET 日
+        target_et_s += _ET_DAY_ET_S
+    return int(target_et_s * 7 / 144)              # ET 秒 → 現實秒
+
+
+def _build_countdown_embed(hour: int, minute: int, unix_ts: int) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"⏱️ ET {hour:02d}:{minute:02d} 倒數",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="現實時間", value=f"<t:{unix_ts}:f>", inline=False)
+    embed.add_field(name="距離現在", value=f"<t:{unix_ts}:R>", inline=False)
+    embed.set_footer(text="每 ET 日 = 70 現實分鐘")
+    return embed
+
+
 def _build_month_embed(year, month):
     lines = []
     for day in range(1, 33):
@@ -98,11 +140,26 @@ class EorzeaTime(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="et", description="顯示當前艾歐澤亞時間，可切換月曆對照現實時間")
-    async def et(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            embed=_build_current_embed(), view=ETCurrentView(), ephemeral=True
-        )
+    @app_commands.command(name="et", description="顯示當前艾歐澤亞時間；輸入 ET 時間（如 2100）可查詢倒數")
+    @app_commands.describe(et_time="ET 時間（格式：HHMM，例如 2100 代表 ET 21:00）")
+    async def et(self, interaction: discord.Interaction, et_time: str | None = None):
+        if et_time is not None:
+            parsed = _parse_et_hhmm(et_time)
+            if parsed is None:
+                await interaction.response.send_message(
+                    "❌ 無效的 ET 時間格式，請輸入 1~4 位數字，例如 `2100` 或 `930`。",
+                    ephemeral=True,
+                )
+                return
+            h, m = parsed
+            unix_ts = _next_et_hhmm_unix(h, m)
+            await interaction.response.send_message(
+                embed=_build_countdown_embed(h, m, unix_ts), ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                embed=_build_current_embed(), view=ETCurrentView(), ephemeral=True
+            )
 
 
 async def setup(bot):

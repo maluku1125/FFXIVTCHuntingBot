@@ -30,7 +30,7 @@ WORLD_ALIASES: dict[int, list[str]] = {
 }
 
 # 結束關鍵字（hardcode，不放 ini）
-_END_KEYWORDS = re.compile(r'結束時間|結束|done|DONE|到站|到站時間|end|END|完成|\bend\b', re.IGNORECASE)
+_END_KEYWORDS = re.compile(r'結束時間|結束|done|DONE|到站|到站時間|end|END|完成|\bend\b|\bend\b', re.IGNORECASE)
 _STRIKETHROUGH = re.compile(r'~~.+?~~', re.DOTALL)
 
 # 時間 regex（依優先順序）
@@ -51,6 +51,15 @@ def _normalize_ampm(content: str) -> str:
             h = 0
         return f"{h:02d}:{mn}"
     return _RE_AMPM.sub(_repl, content)
+
+
+def _to_unix_with_daywrap(h: int, mn: int) -> float:
+    """HH:MM → Unix（UTC+8）。若合成結果比現在早超過 12 小時，自動加一天。"""
+    now_tw    = datetime.now(_TZ_TW)
+    candidate = now_tw.replace(hour=h, minute=mn, second=0, microsecond=0)
+    if (now_tw - candidate).total_seconds() > 12 * 3600:
+        candidate += timedelta(days=1)
+    return candidate.timestamp()
 
 
 def _parse_times(content: str) -> list[tuple[int, int]]:
@@ -148,34 +157,90 @@ def _extract_end_time_unix(content: str) -> float | None:
         m = _RE_DISCORD_TS.search(after)
         if m:
             return float(m.group(1))
-        # 次要：HH:MM → 合成今日 UTC+8
+        # 次要：HH:MM → 含跨日修正
         for m in _RE_HHMM_COLON.finditer(after):
             h, mn = int(m.group(1)), int(m.group(2))
             if 0 <= h <= 23 and 0 <= mn <= 59:
-                now_tw = datetime.now(_TZ_TW)
-                return now_tw.replace(hour=h, minute=mn, second=0, microsecond=0).timestamp()
+                return _to_unix_with_daywrap(h, mn)
+    return None
+
+
+def _extract_end_time_near_keyword(content: str) -> float | None:
+    """
+    掃描所有 END 關鍵字位置，取其前方（文字位置最近）的時間作為結束時間。
+    同行或跨行均適用，並自動跨日修正。
+    """
+    norm = _normalize_ampm(content)
+
+    # 收集所有時間與其文字位置，避免重複span
+    time_items: list[tuple[int, int, object]] = []  # (start, end, value)
+    # value: float（discord ts）或 (h, mn) tuple
+    used: list[tuple[int, int]] = []
+
+    def _overlaps(s: int, e: int) -> bool:
+        for us, ue in used:
+            if s < ue and e > us:
+                return True
+        return False
+
+    for m in _RE_DISCORD_TS.finditer(norm):
+        if not _overlaps(m.start(), m.end()):
+            time_items.append((m.start(), m.end(), float(m.group(1))))
+            used.append((m.start(), m.end()))
+
+    for m in _RE_TST.finditer(norm):
+        if _overlaps(m.start(), m.end()):
+            continue
+        raw = m.group(1)
+        if len(raw) <= 2:
+            continue
+        h = int(raw[:-2]) if len(raw) == 4 else int(raw[0])
+        mn = int(raw[-2:])
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            time_items.append((m.start(), m.end(), (h, mn)))
+            used.append((m.start(), m.end()))
+
+    for m in _RE_HHMM_COLON.finditer(norm):
+        if _overlaps(m.start(), m.end()):
+            continue
+        h, mn = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            time_items.append((m.start(), m.end(), (h, mn)))
+            used.append((m.start(), m.end()))
+
+    if not time_items:
+        return None
+
+    # 對每個 END 關鍵字，取其前方位置最近的時間
+    for end_m in _END_KEYWORDS.finditer(norm):
+        end_pos = end_m.start()
+        before  = [(s, e, v) for s, e, v in time_items if s < end_pos]
+        if not before:
+            continue
+        _, _, value = max(before, key=lambda x: x[0])  # 位置最靠近 END 的
+        if isinstance(value, float):
+            return value
+        h, mn = value
+        return _to_unix_with_daywrap(h, mn)
+
     return None
 
 
 def _resolve_end_time(after: discord.Message) -> float:
     """
     從訊息內容解析結束時間。
-    優先從「結束時間」行抓取（支援 Discord timestamp 與 HH:MM），
-    再退而取全文最大值，最後 fallback 為 edited_at。
+    1. 「結束時間」行直接提取（Discord ts 或 HH:MM）
+    2. END 關鍵字前方最近的時間（同行或跨行均適用，含跨日修正）
+    3. fallback：edited_at 或當前時間
     """
-    # 優先：從「結束時間」行直接提取
     ts = _extract_end_time_unix(after.content)
     if ts is not None:
         return ts
 
-    # 次要：全文最大時間（刪除線等無明確結束時間行的情境）
-    now_tw = datetime.now(_TZ_TW)
-    times = _parse_times(after.content)
-    if times:
-        h, mn = max(times, key=lambda t: t[0] * 60 + t[1])
-        return now_tw.replace(hour=h, minute=mn, second=0, microsecond=0).timestamp()
+    ts = _extract_end_time_near_keyword(after.content)
+    if ts is not None:
+        return ts
 
-    # fallback: 使用 Discord 回報的編輯時間
     if after.edited_at:
         return after.edited_at.timestamp()
     return datetime.now(timezone.utc).timestamp()
