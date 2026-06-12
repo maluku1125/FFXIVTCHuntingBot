@@ -458,11 +458,14 @@ class ATrainOverview(commands.Cog):
             # 補全年份（及月份/日期）
             if fmt == "%H:%M":
                 parsed = parsed.replace(year=now_dt.year, month=now_dt.month, day=now_dt.day)
+                # 若解析結果在未來（例如過午夜後回報昨晚的討伐），退回昨天
+                if parsed > now_dt:
+                    parsed -= datetime.timedelta(days=1)
             else:
                 parsed = parsed.replace(year=now_dt.year)
-            # 若解析結果在未來，視為前一年
-            if parsed > now_dt:
-                parsed = parsed.replace(year=now_dt.year - 1)
+                # 若解析結果在未來，視為前一年
+                if parsed > now_dt:
+                    parsed = parsed.replace(year=now_dt.year - 1)
             new_ts = parsed.timestamp()
 
         # ── 更新狀態 ──────────────────────────────────────────────────────────

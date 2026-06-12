@@ -505,6 +505,10 @@ def _load_notify_state() -> dict:
         try:
             with open(_NOTIFY_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # 舊格式檢測：根層 key 若無一個是純數字（guild_id），視為舊格式，捨棄重建
+            if data and not any(k.isdigit() for k in data):
+                print("[SRankSpecial] srank_special_notify_state.json 為舊格式，自動捨棄並重建。")
+                return {}
             # 向下相容：pending_delete 舊條目缺 kind 時預設 "open"
             for guild_data in data.values():
                 if isinstance(guild_data, dict):
@@ -830,6 +834,23 @@ class SRankSpecial(commands.Cog):
         if not self._panels:
             return
 
+        # 每 tick 從磁碟合併 warned/opened：
+        # 若有多個 bot 實例同時運行，A 實例發送並存檔後，
+        # B 實例下一個 tick 會讀到 A 的記錄，進而跳過重複發送。
+        disk_state = _load_notify_state()
+        for gid_str, gdata in disk_state.items():
+            if gid_str not in self._notify_state:
+                self._notify_state[gid_str] = gdata
+            else:
+                for k, kdata in gdata.items():
+                    if k not in self._notify_state[gid_str]:
+                        self._notify_state[gid_str][k] = kdata
+                    else:
+                        for sub in ("warned", "opened"):
+                            disk_set = set(kdata.get(sub, []))
+                            mem_set  = set(self._notify_state[gid_str][k].get(sub, []))
+                            self._notify_state[gid_str][k][sub] = sorted(disk_set | mem_set)
+
         cfg = configparser.ConfigParser()
         cfg.read(_CONFIG_PATH, encoding="utf-8")
 
@@ -837,9 +858,9 @@ class SRankSpecial(commands.Cog):
         notify_guild_id  = int(notify_guild_str) if notify_guild_str.isdigit() else None
 
         now = int(time.time())
-        state_changed = False
 
         for guild_id, (channel_id, _) in list(self._panels.items()):
+            state_changed = False
             if notify_guild_id is not None and guild_id != notify_guild_id:
                 continue  # 不在允許清單內，跳過
 
@@ -872,12 +893,17 @@ class SRankSpecial(commands.Cog):
                     print(f"[SRankSpecial notify] guild={guild_id} 無法取得面板頻道 (ID: {channel_id}): {e!r}")
                     continue
 
-            # 清理 30 天前的舊記錄
+            # 清理舊記錄：超過 30 天 或 超過 30 筆時移除最舊的
             cutoff = now - 30 * 86400
             for k in g_state:
                 for sub in ("warned", "opened"):
                     before = len(g_state[k][sub])
-                    g_state[k][sub] = [ts for ts in g_state[k][sub] if ts > cutoff]
+                    # 先移除超過 30 天的
+                    entries = [ts for ts in g_state[k][sub] if ts > cutoff]
+                    # 再若超過 30 筆，只保留最新 30 筆
+                    if len(entries) > 30:
+                        entries = sorted(entries)[-30:]
+                    g_state[k][sub] = entries
                     if len(g_state[k][sub]) != before:
                         state_changed = True
 
@@ -922,6 +948,9 @@ class SRankSpecial(commands.Cog):
                     # ① 預告通知：窗口開始前 warn_secs
                     if win_start - warn_secs <= now < win_start:
                         if win_start not in g_state[key]["warned"]:
+                            # 先標記再發送：即使 bot 在發送後重啟，狀態已存檔不會重複
+                            g_state[key]["warned"].append(win_start)
+                            _save_notify_state(self._notify_state)
                             try:
                                 sent = await channel.send(
                                     f"<@&{role_id}> ⏰ 窗口將於 <t:{win_start}:R> 開啟！"
@@ -930,7 +959,6 @@ class SRankSpecial(commands.Cog):
                                 print(f"[SRankSpecial notify] guild={guild_id} 預告通知已發送 ({key}) win_start={win_start}")
                             except Exception as e:
                                 print(f"[SRankSpecial notify] guild={guild_id} 預告通知發送失敗 ({key}): {e!r}")
-                            g_state[key]["warned"].append(win_start)
                             state_changed = True
 
                     # ② 開窗通知：窗口已開始，先刪除同窗口的預告訊息
@@ -938,7 +966,10 @@ class SRankSpecial(commands.Cog):
                     # 但同一連續天氣序列的 win_end 相同，避免每格都重複送出通知。
                     elif win_start <= now < win_end:
                         if win_end not in g_state[key]["opened"]:
-                            # 刪除同 win_start 的預告訊息（kind="warn"）
+                            # 先標記再發送：即使 bot 在發送後重啟，狀態已存檔不會重複
+                            g_state[key]["opened"].append(win_end)
+                            _save_notify_state(self._notify_state)
+                            # 刪除同 win_end 的預告訊息（kind="warn"）
                             warn_entries = [
                                 e for e in g_state[key]["pending_delete"]
                                 if e.get("kind") == "warn" and e["win_end"] == win_end
@@ -963,13 +994,12 @@ class SRankSpecial(commands.Cog):
                                 print(f"[SRankSpecial notify] guild={guild_id} 開窗通知已發送 ({key}) win_start={win_start} win_end={win_end}")
                             except Exception as e:
                                 print(f"[SRankSpecial notify] guild={guild_id} 開窗通知發送失敗 ({key}): {e!r}")
-                            g_state[key]["opened"].append(win_end)
                             state_changed = True
 
                     # 超過 warn_secs 以上的未來窗口，本次不處理
 
-        if state_changed:
-            _save_notify_state(self._notify_state)
+            if state_changed:
+                _save_notify_state(self._notify_state)
 
     @notify_check.before_loop
     async def before_notify_check(self):

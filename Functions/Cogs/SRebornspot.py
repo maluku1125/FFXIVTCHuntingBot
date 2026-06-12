@@ -665,7 +665,11 @@ class SRebornSpot(commands.Cog):
         server: app_commands.Choice[str],
         map_name: str,
     ):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            print(f"[/srankmap] interaction expired (10062)，忽略本次請求。")
+            return
         _u = interaction.user
         _nick = getattr(_u, 'nick', None) or _u.display_name
         print(f"[/srankmap] user={_nick} ({_u.id}) | version={version.value} | server={server.value} | map={map_name} | guild={getattr(interaction.guild, 'name', 'DM')} | channel={getattr(interaction.channel, 'name', 'N/A')}")
@@ -709,6 +713,13 @@ class SRebornSpot(commands.Cog):
                 await interaction.followup.send(msg, ephemeral=True)
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
+        elif (
+            isinstance(error, app_commands.CommandInvokeError)
+            and isinstance(error.original, discord.NotFound)
+            and error.original.code == 10062
+        ):
+            # Interaction token 已過期（Discord 3 秒限制），屬偶發性網路問題，靜默記錄即可
+            print(f"[cog_app_command_error] interaction expired (10062) for command '{getattr(error, 'command', None) and error.command.name}'")
         else:
             raise error
 

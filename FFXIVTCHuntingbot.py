@@ -59,8 +59,8 @@ class HuntBot(commands.AutoShardedBot):
     async def setup_hook(self):
         await self.load_extension("Functions.Cogs.ATrainOverview")
         print("Cog: ATrainOverview loaded")
-        await self.load_extension("Functions.Cogs.SRebornspot")
-        print("Cog: SRebornspot loaded")
+        # await self.load_extension("Functions.Cogs.SRebornspot")
+        # print("Cog: SRebornspot loaded")
         await self.load_extension("Functions.Cogs.MessageLogger")
         print("Cog: MessageLogger loaded")
         await self.load_extension("Functions.Cogs.EorzeaTime")

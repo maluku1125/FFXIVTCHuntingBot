@@ -54,11 +54,11 @@ def _normalize_ampm(content: str) -> str:
 
 
 def _to_unix_with_daywrap(h: int, mn: int) -> float:
-    """HH:MM → Unix（UTC+8）。若合成結果比現在早超過 12 小時，自動加一天。"""
+    """HH:MM → Unix（UTC+8）。若合成結果在未來（過午夜後回報昨晚時間），退回昨天。"""
     now_tw    = datetime.now(_TZ_TW)
     candidate = now_tw.replace(hour=h, minute=mn, second=0, microsecond=0)
-    if (now_tw - candidate).total_seconds() > 12 * 3600:
-        candidate += timedelta(days=1)
+    if candidate > now_tw:
+        candidate -= timedelta(days=1)
     return candidate.timestamp()
 
 
